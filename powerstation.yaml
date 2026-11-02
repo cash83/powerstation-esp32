@@ -1,0 +1,444 @@
+# SOSTITUZIONE v2 — RESPONDER + SENSORI + COMANDI.
+# L'ESP32 finge di essere il modulo FC41D, sblocca i report 0x07 e li spacchetta in sensori HA;
+# switch/number/select scrivono i datapoint al mainboard (cmd 0x06).
+#
+# COLLEGAMENTO (modulo FC41D STACCATO, ESP al suo posto):
+#   GPIO17 (TX) -> MAIN_TXD    GPIO16 (RX) -> MAIN_RXD    GND -> GND
+substitutions:
+  name: powerstation
+
+esphome:
+  name: ${name}
+  friendly_name: Powerstation
+  includes:
+    - powerstation_module.h
+
+esp32:
+  board: esp32-s3-devkitc-1
+  framework:
+    type: esp-idf
+    sdkconfig_options:
+      CONFIG_ESP_BROWNOUT_DET: "n"
+
+logger:
+  level: INFO
+
+# salva le preferenze (intensita' spia, ecc.) in flash entro 10s invece dei 60s di default,
+# cosi' non si perdono se spegni la powerstation poco dopo aver cambiato il valore
+preferences:
+  flash_write_interval: 10s
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  output_power: 8.5dB
+  ap:
+    ssid: "${name} fallback"
+    password: !secret wifi_password
+captive_portal:
+api:
+  encryption:
+    key: !secret api_encryption_key
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+time:
+  - platform: sntp
+    id: sntp_time
+    timezone: Europe/Rome
+
+uart:
+  id: bus
+  tx_pin: GPIO17
+  rx_pin: GPIO16
+  baud_rate: 115200
+  rx_buffer_size: 2048
+
+sensor:
+  # --- segnale WiFi VERO dell'ESP ---
+  - platform: wifi_signal
+    name: "Segnale WiFi"
+    update_interval: 30s
+  # --- uptime: alimenta il testo "Acceso da" (nascosto) ---
+  - platform: uptime
+    id: ps_uptime_sec
+    internal: true
+    update_interval: 30s
+  # --- batteria ---
+  - { platform: template, name: "SOC", id: ps_soc, unit_of_measurement: "%", device_class: battery, accuracy_decimals: 0, update_interval: never }
+  - { platform: template, name: "Batteria Tensione", id: ps_batt_v, unit_of_measurement: "V", device_class: voltage, accuracy_decimals: 2, update_interval: never }
+  - { platform: template, name: "Batteria Potenza", id: ps_batt_w, unit_of_measurement: "W", device_class: power, accuracy_decimals: 0, update_interval: never }
+  - { platform: template, name: "Batteria Temperatura", id: ps_batt_t, unit_of_measurement: "°C", device_class: temperature, accuracy_decimals: 0, update_interval: never }
+  # --- energia disponibile in batteria = SOC% * 2048 Wh (piena = 2048 Wh) ---
+  - platform: template
+    name: "Capacità"
+    id: ps_capacita
+    unit_of_measurement: "Wh"
+    device_class: energy_storage
+    accuracy_decimals: 0
+    update_interval: 30s
+    lambda: |-
+      float soc = id(ps_soc).state;
+      if (std::isnan(soc)) return {};
+      return soc / 100.0f * 2048.0f;
+  # --- AC / PV / rete ---
+  - { platform: template, name: "AC Tensione", id: ps_ac_v, unit_of_measurement: "V", device_class: voltage, accuracy_decimals: 1, update_interval: never }
+  - { platform: template, name: "AC Uscita", id: ps_ac_w, unit_of_measurement: "W", device_class: power, accuracy_decimals: 0, update_interval: never }
+  - { platform: template, name: "PV Potenza", id: ps_pv_w, unit_of_measurement: "W", device_class: power, accuracy_decimals: 0, update_interval: never }
+  - { platform: template, name: "PV Tensione", id: ps_pv_v, unit_of_measurement: "V", device_class: voltage, accuracy_decimals: 1, update_interval: never }
+  - { platform: template, name: "Rete Tensione", id: ps_grid_v, unit_of_measurement: "V", device_class: voltage, accuracy_decimals: 1, update_interval: never }
+  - { platform: template, name: "Rete Potenza", id: ps_grid_w, unit_of_measurement: "W", device_class: power, accuracy_decimals: 0, update_interval: never }
+  - { platform: template, name: "Rete Frequenza", id: ps_grid_hz, unit_of_measurement: "Hz", accuracy_decimals: 2, update_interval: never }
+  # --- temperature schede ---
+  - { platform: template, name: "Temp MOS", id: ps_t_mos, unit_of_measurement: "°C", device_class: temperature, accuracy_decimals: 0, update_interval: never }
+  - { platform: template, name: "Temp Inverter", id: ps_t_inv, unit_of_measurement: "°C", device_class: temperature, accuracy_decimals: 0, update_interval: never }
+  - { platform: template, name: "Temp MPPT", id: ps_t_mppt, unit_of_measurement: "°C", device_class: temperature, accuracy_decimals: 0, update_interval: never }
+  # --- rami DC / USB / Type-C ---
+  - { platform: template, name: "DC Totale", id: ps_dc_total, unit_of_measurement: "W", device_class: power, accuracy_decimals: 0, update_interval: never }
+  - { platform: template, name: "USB-1 Potenza", id: ps_usb1_w, unit_of_measurement: "W", device_class: power, accuracy_decimals: 0, update_interval: never }
+  - { platform: template, name: "USB-2 Potenza", id: ps_usb2_w, unit_of_measurement: "W", device_class: power, accuracy_decimals: 0, update_interval: never }
+  - { platform: template, name: "USB-3 Potenza", id: ps_usb3_w, unit_of_measurement: "W", device_class: power, accuracy_decimals: 0, update_interval: never }
+  - { platform: template, name: "USB-4 Potenza", id: ps_usb4_w, unit_of_measurement: "W", device_class: power, accuracy_decimals: 0, update_interval: never }
+  - { platform: template, name: "Type-C 1 Tensione", id: ps_tc1_v, unit_of_measurement: "V", device_class: voltage, accuracy_decimals: 1, update_interval: never }
+  - { platform: template, name: "Type-C 1 Potenza", id: ps_tc1_w, unit_of_measurement: "W", device_class: power, accuracy_decimals: 0, update_interval: never }
+  - { platform: template, name: "Type-C 2 Tensione", id: ps_tc2_v, unit_of_measurement: "V", device_class: voltage, accuracy_decimals: 1, update_interval: never }
+  - { platform: template, name: "Type-C 2 Potenza", id: ps_tc2_w, unit_of_measurement: "W", device_class: power, accuracy_decimals: 0, update_interval: never }
+  - { platform: template, name: "DC 12V Tensione", id: ps_dc12_v, unit_of_measurement: "V", device_class: voltage, accuracy_decimals: 1, update_interval: never }
+  - { platform: template, name: "DC 12V Potenza", id: ps_dc12_w, unit_of_measurement: "W", device_class: power, accuracy_decimals: 0, update_interval: never }
+  - { platform: template, name: "DC 24V Tensione", id: ps_dc24_v, unit_of_measurement: "V", device_class: voltage, accuracy_decimals: 1, update_interval: never }
+  - { platform: template, name: "DC 24V Potenza", id: ps_dc24_w, unit_of_measurement: "W", device_class: power, accuracy_decimals: 0, update_interval: never }
+  # --- valori calcolati (come l'addon) ---
+  - platform: template
+    name: "Batteria Corrente"
+    id: ps_batt_a
+    unit_of_measurement: "A"
+    device_class: current
+    accuracy_decimals: 2
+    update_interval: 5s
+    lambda: |-
+      float v = id(ps_batt_v).state; if (isnan(v) || v == 0) return {};
+      return id(ps_batt_w).state / v;
+  - platform: template
+    name: "Potenza Uscita Totale"
+    id: ps_out_total
+    unit_of_measurement: "W"
+    device_class: power
+    accuracy_decimals: 0
+    update_interval: 5s
+    lambda: |-
+      float a = id(ps_ac_w).state, d = id(ps_dc_total).state, g = id(ps_grid_w).state;
+      return (isnan(a)?0:a) + (isnan(d)?0:d) + ((!isnan(g)&&g>0)?g:0);
+  - platform: template
+    name: "Potenza Ingresso Totale"
+    id: ps_in_total
+    unit_of_measurement: "W"
+    device_class: power
+    accuracy_decimals: 0
+    update_interval: 5s
+    lambda: |-
+      float p = id(ps_pv_w).state, g = id(ps_grid_w).state;
+      return (isnan(p)?0:p) + ((!isnan(g)&&g<0)?-g:0);
+  # --- tensioni USB (servono per le correnti) ---
+  - { platform: template, name: "USB-1 Tensione", id: ps_usb1_v, unit_of_measurement: "V", device_class: voltage, accuracy_decimals: 1, update_interval: never }
+  - { platform: template, name: "USB-2 Tensione", id: ps_usb2_v, unit_of_measurement: "V", device_class: voltage, accuracy_decimals: 1, update_interval: never }
+  - { platform: template, name: "USB-3 Tensione", id: ps_usb3_v, unit_of_measurement: "V", device_class: voltage, accuracy_decimals: 1, update_interval: never }
+  - { platform: template, name: "USB-4 Tensione", id: ps_usb4_v, unit_of_measurement: "V", device_class: voltage, accuracy_decimals: 1, update_interval: never }
+  # --- correnti per ramo (A = W / V) ---
+  - { platform: template, name: "USB-1 Corrente", id: ps_usb1_a, unit_of_measurement: "A", device_class: current, accuracy_decimals: 2, update_interval: 5s, lambda: 'float v=id(ps_usb1_v).state,w=id(ps_usb1_w).state; return (isnan(v)||v<=0||isnan(w))?0.0f:w/v;' }
+  - { platform: template, name: "USB-2 Corrente", id: ps_usb2_a, unit_of_measurement: "A", device_class: current, accuracy_decimals: 2, update_interval: 5s, lambda: 'float v=id(ps_usb2_v).state,w=id(ps_usb2_w).state; return (isnan(v)||v<=0||isnan(w))?0.0f:w/v;' }
+  - { platform: template, name: "USB-3 Corrente", id: ps_usb3_a, unit_of_measurement: "A", device_class: current, accuracy_decimals: 2, update_interval: 5s, lambda: 'float v=id(ps_usb3_v).state,w=id(ps_usb3_w).state; return (isnan(v)||v<=0||isnan(w))?0.0f:w/v;' }
+  - { platform: template, name: "USB-4 Corrente", id: ps_usb4_a, unit_of_measurement: "A", device_class: current, accuracy_decimals: 2, update_interval: 5s, lambda: 'float v=id(ps_usb4_v).state,w=id(ps_usb4_w).state; return (isnan(v)||v<=0||isnan(w))?0.0f:w/v;' }
+  - { platform: template, name: "Type-C 1 Corrente", id: ps_tc1_a, unit_of_measurement: "A", device_class: current, accuracy_decimals: 2, update_interval: 5s, lambda: 'float v=id(ps_tc1_v).state,w=id(ps_tc1_w).state; return (isnan(v)||v<=0||isnan(w))?0.0f:w/v;' }
+  - { platform: template, name: "Type-C 2 Corrente", id: ps_tc2_a, unit_of_measurement: "A", device_class: current, accuracy_decimals: 2, update_interval: 5s, lambda: 'float v=id(ps_tc2_v).state,w=id(ps_tc2_w).state; return (isnan(v)||v<=0||isnan(w))?0.0f:w/v;' }
+  - { platform: template, name: "DC 12V Corrente", id: ps_dc12_a, unit_of_measurement: "A", device_class: current, accuracy_decimals: 2, update_interval: 5s, lambda: 'float v=id(ps_dc12_v).state,w=id(ps_dc12_w).state; return (isnan(v)||v<=0||isnan(w))?0.0f:w/v;' }
+  - { platform: template, name: "DC 24V Corrente", id: ps_dc24_a, unit_of_measurement: "A", device_class: current, accuracy_decimals: 2, update_interval: 5s, lambda: 'float v=id(ps_dc24_v).state,w=id(ps_dc24_w).state; return (isnan(v)||v<=0||isnan(w))?0.0f:w/v;' }
+  - { platform: template, name: "AC Corrente", id: ps_ac_a, unit_of_measurement: "A", device_class: current, accuracy_decimals: 2, update_interval: 5s, lambda: 'float v=id(ps_ac_v).state,w=id(ps_ac_w).state; return (isnan(v)||v<=0||isnan(w))?0.0f:w/v;' }
+  - { platform: template, name: "PV Corrente", id: ps_pv_a, unit_of_measurement: "A", device_class: current, accuracy_decimals: 2, update_interval: 5s, lambda: 'float v=id(ps_pv_v).state,w=id(ps_pv_w).state; return (isnan(v)||v<=0||isnan(w))?0.0f:w/v;' }
+  # --- celle BMS (diagnostica) ---
+  - { platform: template, name: "Cella 01", id: ps_cell_01, unit_of_measurement: "V", device_class: voltage, accuracy_decimals: 3, entity_category: diagnostic, update_interval: never }
+  - { platform: template, name: "Cella 02", id: ps_cell_02, unit_of_measurement: "V", device_class: voltage, accuracy_decimals: 3, entity_category: diagnostic, update_interval: never }
+  - { platform: template, name: "Cella 03", id: ps_cell_03, unit_of_measurement: "V", device_class: voltage, accuracy_decimals: 3, entity_category: diagnostic, update_interval: never }
+  - { platform: template, name: "Cella 04", id: ps_cell_04, unit_of_measurement: "V", device_class: voltage, accuracy_decimals: 3, entity_category: diagnostic, update_interval: never }
+  - { platform: template, name: "Cella 05", id: ps_cell_05, unit_of_measurement: "V", device_class: voltage, accuracy_decimals: 3, entity_category: diagnostic, update_interval: never }
+  - { platform: template, name: "Cella 06", id: ps_cell_06, unit_of_measurement: "V", device_class: voltage, accuracy_decimals: 3, entity_category: diagnostic, update_interval: never }
+  - { platform: template, name: "Cella 07", id: ps_cell_07, unit_of_measurement: "V", device_class: voltage, accuracy_decimals: 3, entity_category: diagnostic, update_interval: never }
+  - { platform: template, name: "Cella 08", id: ps_cell_08, unit_of_measurement: "V", device_class: voltage, accuracy_decimals: 3, entity_category: diagnostic, update_interval: never }
+  - { platform: template, name: "Cella 09", id: ps_cell_09, unit_of_measurement: "V", device_class: voltage, accuracy_decimals: 3, entity_category: diagnostic, update_interval: never }
+  - { platform: template, name: "Cella 10", id: ps_cell_10, unit_of_measurement: "V", device_class: voltage, accuracy_decimals: 3, entity_category: diagnostic, update_interval: never }
+  - { platform: template, name: "Cella 11", id: ps_cell_11, unit_of_measurement: "V", device_class: voltage, accuracy_decimals: 3, entity_category: diagnostic, update_interval: never }
+  - { platform: template, name: "Cella 12", id: ps_cell_12, unit_of_measurement: "V", device_class: voltage, accuracy_decimals: 3, entity_category: diagnostic, update_interval: never }
+  - { platform: template, name: "Cella 13", id: ps_cell_13, unit_of_measurement: "V", device_class: voltage, accuracy_decimals: 3, entity_category: diagnostic, update_interval: never }
+  - { platform: template, name: "Cicli batteria", id: ps_cycles, accuracy_decimals: 0, entity_category: diagnostic, update_interval: never }
+  - { platform: template, name: "Corrente max carica", id: ps_maxchg, unit_of_measurement: "A", device_class: current, accuracy_decimals: 1, entity_category: diagnostic, update_interval: never }
+  - { platform: template, name: "Stato MOS BMS", id: ps_mos, accuracy_decimals: 0, entity_category: diagnostic, update_interval: never }
+
+binary_sensor:
+  # Blocco telemetria: ON se la stazione e' online ma non arriva un report da >60s.
+  # Con l'ESP i report arrivano ogni ~5s, quindi >60s = vero stallo (il "blocco").
+  # HA lo registra nel Logbook: se non si accende mai, e' andato tutto liscio.
+  - platform: template
+    name: "Dati fermi"
+    id: ps_stall
+    device_class: problem
+    entity_category: diagnostic
+    filters:
+      - delayed_on: 30s      # deve restare fermo 30s prima di accendersi (anti lampo da riavvio)
+    lambda: |-
+      if (g_ps == nullptr || !g_ps->online() || !g_ps->had_report()) return false;
+      return g_ps->ms_since_report() > 60000;
+
+text_sensor:
+  - { platform: template, name: "Stato", id: ps_status_txt, update_interval: never }
+  - { platform: template, name: "Codice guasto", id: ps_fault_txt, update_interval: never }
+  - { platform: template, name: "Autonomia", id: ps_auton_txt, update_interval: never }
+  # --- da quanto e' accesa (= uptime ESP, che si accende con la powerstation) ---
+  - platform: template
+    name: "Acceso da"
+    id: ps_uptime_txt
+    entity_category: diagnostic
+    update_interval: 30s
+    lambda: |-
+      float u = id(ps_uptime_sec).state;
+      if (std::isnan(u)) return std::string("-");
+      uint32_t s = (uint32_t) u;
+      int d = s / 86400; s %= 86400;
+      int h = s / 3600;  s %= 3600;
+      int m = s / 60;
+      char buf[32];
+      if (d > 0)      sprintf(buf, "%dg %dh %dm", d, h, m);
+      else if (h > 0) sprintf(buf, "%dh %dm", h, m);
+      else            sprintf(buf, "%dm", m);
+      return std::string(buf);
+  # --- IP dell'ESP (diagnostica) ---
+  - platform: wifi_info
+    ip_address:
+      name: "IP"
+
+button:
+  - platform: restart
+    name: "Riavvia ESP"
+    entity_category: config
+
+number:
+  - platform: template
+    name: "Potenza uscita"
+    id: ps_out_power
+    min_value: 100
+    max_value: 800
+    step: 10
+    unit_of_measurement: "W"
+    optimistic: true
+    set_action:
+      - lambda: 'if (g_ps) g_ps->write_val(0x001D, (int) x);'
+  - platform: template
+    name: "Intervallo aggiornamento"
+    id: ps_q_interval
+    min_value: 2
+    max_value: 60
+    step: 1
+    initial_value: 5
+    restore_value: true
+    unit_of_measurement: "s"
+    optimistic: true
+    mode: slider
+    set_action:
+      - lambda: 'if (g_ps) g_ps->set_q_ms((uint32_t)(x * 1000));'
+
+switch:
+  - platform: template
+    name: "Uscita AC"
+    id: ps_ac_switch
+    optimistic: true
+    turn_on_action:  { lambda: 'if (g_ps) g_ps->write_bool(0x000E, true);' }
+    turn_off_action: { lambda: 'if (g_ps) g_ps->write_bool(0x000E, false);' }
+  - platform: template
+    name: "Uscita DC"
+    id: ps_dc_switch
+    optimistic: true
+    turn_on_action:  { lambda: 'if (g_ps) g_ps->write_bool(0x000F, true);' }
+    turn_off_action: { lambda: 'if (g_ps) g_ps->write_bool(0x000F, false);' }
+  - platform: template
+    name: "Immissione in rete"
+    id: ps_grid_switch
+    optimistic: true
+    turn_on_action:  { lambda: 'if (g_ps) g_ps->write_bool(0x001C, true);' }
+    turn_off_action: { lambda: 'if (g_ps) g_ps->write_bool(0x001C, false);' }
+  - platform: template
+    name: "Limite carica AC"
+    id: ps_ac_charge_limit
+    optimistic: true
+    turn_on_action:  { lambda: 'if (g_ps) g_ps->write_bool(0x0021, true);' }
+    turn_off_action: { lambda: 'if (g_ps) g_ps->write_bool(0x0021, false);' }
+  - platform: template
+    name: "Beep"
+    id: ps_beep
+    optimistic: true
+    turn_on_action:  { lambda: 'if (g_ps) g_ps->write_bool(0x0027, true);' }
+    turn_off_action: { lambda: 'if (g_ps) g_ps->write_bool(0x0027, false);' }
+  - platform: template
+    name: "LED"
+    id: ps_led
+    optimistic: true
+    turn_on_action:  { lambda: 'if (g_ps) g_ps->write_val(0x0020, 1);' }   # 1 = Alta
+    turn_off_action: { lambda: 'if (g_ps) g_ps->write_val(0x0020, 0);' }
+
+select:
+  - platform: template
+    name: "Modalità"
+    id: ps_mode
+    optimistic: true
+    options: ["Normale", "Priorità uscita", "Priorità riserva"]
+    set_action:
+      - lambda: |-
+          if (g_ps) { const auto &o = id(ps_mode).traits.get_options(); for (size_t i=0;i<o.size();i++) if (o[i]==x) { g_ps->write_val(0x001B,(int)i); break; } }
+  - platform: template
+    name: "Riserva di carica"
+    id: ps_retention
+    optimistic: true
+    options: ["0%", "5%", "10%"]
+    set_action:
+      - lambda: |-
+          if (g_ps) { const auto &o = id(ps_retention).traits.get_options(); for (size_t i=0;i<o.size();i++) if (o[i]==x) { g_ps->write_val(0x000B,(int)i); break; } }
+  - platform: template
+    name: "Frequenza invio dati"
+    id: ps_hf
+    optimistic: true
+    options: ["Infrequente", "LAN HF", "WiFi HF", "LAN+WiFi HF"]
+    initial_option: "LAN HF"
+    set_action:
+      - lambda: |-
+          if (g_ps) { const auto &o = id(ps_hf).traits.get_options(); for (size_t i=0;i<o.size();i++) if (o[i]==x) { g_ps->set_hfr((uint8_t)i); g_ps->write_val(0x0013,(int)i); break; } }
+  - platform: template
+    name: "Spegnimento schermo"
+    id: ps_screen
+    optimistic: true
+    options: ["3 minuti", "10 minuti", "Mai"]
+    set_action:
+      - lambda: |-
+          if (g_ps) { int v = (x=="3 minuti")?3:((x=="10 minuti")?10:0); g_ps->write_val(0x0026, v); }
+
+light:
+  - platform: esp32_rmt_led_strip
+    id: status_led
+    name: "Spia"
+    icon: "mdi:led-on"
+    pin: GPIO48
+    num_leds: 1
+    chipset: WS2812
+    rgb_order: GRB
+    default_transition_length: 0s
+    restore_mode: RESTORE_DEFAULT_ON
+
+interval:
+  # avviso collegamento: se l'ESP perde il link con la stazione (muto) la Spia
+  # diventa ROSSA ANCHE se era spenta; al ritorno riprende lo stato scelto (colore o spenta).
+  # Non salva ne' pubblica: lo stato scelto dall'utente resta quello vero.
+  - interval: 1s
+    then:
+      - lambda: |-
+          static bool warn = false;
+          static float ur = 1, ug = 1, ub = 1, ubr = 1;
+          static bool uon = true;
+          int s = (g_ps != nullptr) ? g_ps->link_state() : 2;
+          auto *lt = id(status_led);
+          if (s == 0) {                               // link muto -> avviso SEMPRE (anche se spenta)
+            if (!warn) {                              // salva lo stato scelto dall'utente
+              auto v = lt->remote_values;
+              uon = v.is_on(); ubr = v.get_brightness();
+              ur = v.get_red(); ug = v.get_green(); ub = v.get_blue();
+              warn = true;
+            }
+            auto call = lt->make_call();
+            call.set_state(true);
+            call.set_rgb(1.0f, 0.0f, 0.0f);
+            call.set_brightness(1.0f);
+            call.set_transition_length(0);
+            call.set_save(false);
+            call.set_publish(false);
+            call.perform();
+          } else if (warn) {                          // collegamento tornato -> ripristino
+            warn = false;
+            auto call = lt->make_call();
+            call.set_state(uon);
+            if (uon) { call.set_rgb(ur, ug, ub); call.set_brightness(ubr); }
+            call.set_transition_length(0);
+            call.set_save(false);
+            call.perform();
+          }
+  - interval: 12ms
+    then:
+      - lambda: |-
+          if (g_ps == nullptr) {
+            g_ps = new PowerstationModule(id(bus), id(sntp_time));
+            g_ps->setup();
+            // sensori batteria
+            g_ps->reg(0x0301, id(ps_soc));
+            g_ps->reg(0x0303, id(ps_batt_v));
+            g_ps->reg(0x0305, id(ps_batt_w));
+            g_ps->reg(0x0306, id(ps_batt_t));
+            // AC / PV / rete
+            g_ps->reg(0x0502, id(ps_ac_v));
+            g_ps->reg(0x0503, id(ps_ac_w));
+            g_ps->reg(0x0101, id(ps_pv_w));
+            g_ps->reg(0x0103, id(ps_pv_v));
+            g_ps->reg(0x0202, id(ps_grid_v));
+            g_ps->reg(0x0203, id(ps_grid_w));
+            g_ps->reg(0x0204, id(ps_grid_hz));
+            // temperature
+            g_ps->reg(0x2901, id(ps_t_mos));
+            g_ps->reg(0x2902, id(ps_t_inv));
+            g_ps->reg(0x2903, id(ps_t_mppt));
+            // stato / guasto
+            g_ps->set_status_txt(id(ps_status_txt));
+            g_ps->set_fault_txt(id(ps_fault_txt));
+            // celle BMS (gruppo 42 = 0x2A): mV -> V con scala 0.001
+            g_ps->reg(0x2A01, id(ps_cell_01), 0.001f);
+            g_ps->reg(0x2A02, id(ps_cell_02), 0.001f);
+            g_ps->reg(0x2A03, id(ps_cell_03), 0.001f);
+            g_ps->reg(0x2A04, id(ps_cell_04), 0.001f);
+            g_ps->reg(0x2A05, id(ps_cell_05), 0.001f);
+            g_ps->reg(0x2A06, id(ps_cell_06), 0.001f);
+            g_ps->reg(0x2A07, id(ps_cell_07), 0.001f);
+            g_ps->reg(0x2A08, id(ps_cell_08), 0.001f);
+            g_ps->reg(0x2A09, id(ps_cell_09), 0.001f);
+            g_ps->reg(0x2A0A, id(ps_cell_10), 0.001f);
+            g_ps->reg(0x2A0B, id(ps_cell_11), 0.001f);
+            g_ps->reg(0x2A0C, id(ps_cell_12), 0.001f);
+            g_ps->reg(0x2A0D, id(ps_cell_13), 0.001f);
+            g_ps->reg(0x2A0F, id(ps_cycles));
+            g_ps->reg(0x2A10, id(ps_maxchg));
+            g_ps->reg(0x2A11, id(ps_mos));
+            // rami DC / USB / Type-C
+            g_ps->reg(0x0601, id(ps_dc_total));
+            g_ps->reg(0x0602, id(ps_usb1_v));
+            g_ps->reg(0x0603, id(ps_usb1_w));
+            g_ps->reg(0x0604, id(ps_usb2_v));
+            g_ps->reg(0x0605, id(ps_usb2_w));
+            g_ps->reg(0x0606, id(ps_usb3_v));
+            g_ps->reg(0x0607, id(ps_usb3_w));
+            g_ps->reg(0x0608, id(ps_usb4_v));
+            g_ps->reg(0x0609, id(ps_usb4_w));
+            g_ps->reg(0x060A, id(ps_tc1_v));
+            g_ps->reg(0x060B, id(ps_tc1_w));
+            g_ps->reg(0x060C, id(ps_tc2_v));
+            g_ps->reg(0x060D, id(ps_tc2_w));
+            g_ps->reg(0x060E, id(ps_dc12_v));
+            g_ps->reg(0x060F, id(ps_dc12_w));
+            g_ps->reg(0x0610, id(ps_dc24_v));
+            g_ps->reg(0x0611, id(ps_dc24_w));
+            // comandi: number / switch / select
+            g_ps->reg_num(0x001D, id(ps_out_power));
+            g_ps->reg_sw(0x000E, id(ps_ac_switch));
+            g_ps->reg_sw(0x000F, id(ps_dc_switch));
+            g_ps->reg_sw(0x001C, id(ps_grid_switch));
+            g_ps->reg_sw(0x0021, id(ps_ac_charge_limit));
+            g_ps->reg_sw(0x0027, id(ps_beep));
+            g_ps->reg_sel(0x001B, id(ps_mode));
+            g_ps->reg_sel(0x000B, id(ps_retention));
+            g_ps->reg_sw(0x0020, id(ps_led));            // LED come switch (on se != 0)
+            g_ps->set_screen_sel(id(ps_screen));         // spegnimento schermo (valori 3/10/0)
+            g_ps->set_auton_txt(id(ps_auton_txt));       // autonomia in giorni/ore/minuti
+            // HFR: nessuna lettura dal report (sfarfallava); il firmware mantiene la scelta utente
+          }
+          g_ps->loop();
