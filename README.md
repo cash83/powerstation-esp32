@@ -66,14 +66,29 @@ Unplug the original FC41D module first; the ESP32 takes its place on the connect
 | `powerstation_module.h` | the C++ component: responder state machine, TTLV parser, sensor registration, command writes |
 | `secrets.yaml.example` | template for `secrets.yaml` (Wi‑Fi, API key, OTA password) |
 
-> ⚠️ In `powerstation_module.h` the `mac_[6]` array is **zeroed out** — put **your** station's Wi‑Fi MAC / deviceKey there (from the BLE advertisement or the label). The MCU only echoes it back, but it should be yours.
+### Setting `mac_[6]` (optional — the device key)
+
+The firmware sends a 6‑byte identifier to the mainboard in the net‑status reply (Tuya `cmd 0x2D`). On this unit the MCU **just echoes it back and does not validate it**, so you can **leave it zeroed and it still works** — the ESP *is* the module now, and nothing talks to the cloud.
+
+If you'd rather it carry your station's real identity (its *device key*, which on this platform equals the module's Wi‑Fi MAC), get it one of these ways:
+
+- **BLE advertisement** (most reliable): the station advertises as `QUEC_BLE_*` (manufacturer id `0x5551`) with the `deviceKey` in clear in the manufacturer data — see [ha-oukitel #6](https://github.com/VictorCV-DAM/ha-oukitel/issues/6) for the exact byte layout.
+- **Your router**, *before* you remove the stock module: the module's MAC in the DHCP leases is the device key.
+- **The vendor app**: the device ID / SN screen.
+
+It is 12 hex digits (e.g. `aabbccddeeff`). Split them into 6 bytes and write each as `0x..`:
+
+```cpp
+// device key   aa bb cc dd ee ff   ->
+uint8_t mac_[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
+```
 
 ---
 
 ## Install
 
 1. Copy the three files into your ESPHome folder (e.g. `/config/esphome/`), and create `secrets.yaml` from the example.
-2. Set your `mac_[6]` in `powerstation_module.h`.
+2. *(Optional)* set `mac_[6]` to your station's device key — see [Setting `mac_[6]`](#setting-mac_6-optional--the-device-key). Leaving it zeroed works fine.
 3. Compile & upload (first flash over USB, then OTA over Wi‑Fi):
    ```bash
    esphome run powerstation.yaml
