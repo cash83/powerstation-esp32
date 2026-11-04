@@ -173,6 +173,11 @@ sensor:
   - { platform: template, name: "Corrente max carica", id: ps_maxchg, unit_of_measurement: "A", device_class: current, accuracy_decimals: 1, entity_category: diagnostic, update_interval: never }
   - { platform: template, name: "Stato MOS BMS", id: ps_mos, accuracy_decimals: 0, entity_category: diagnostic, update_interval: never }
 
+  # --- temperatura interna del chip ESP32-S3 ---
+  - platform: internal_temperature
+    name: "Temperatura chip ESP32-S3"
+    update_interval: 30s
+
 binary_sensor:
   # Blocco telemetria: ON se la stazione e' online ma non arriva un report da >60s.
   # Con l'ESP i report arrivano ogni ~5s, quindi >60s = vero stallo (il "blocco").
@@ -326,7 +331,7 @@ light:
     pin: GPIO48
     num_leds: 1
     chipset: WS2812
-    rgb_order: GRB
+    channel_colors: GRB
     default_transition_length: 0s
     restore_mode: RESTORE_DEFAULT_ON
 
