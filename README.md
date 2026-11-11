@@ -12,6 +12,8 @@ Verified running continuously well past the 42‑minute mark (1 h 40+), telemetr
 
 ---
 
+> **Newer beta available** — see [`beta-2026-11-11/`](beta-2026-11-11/) ([English](beta-2026-11-11/README.md) · [italiano](beta-2026-11-11/LEGGIMI.md)): stall watchdog, serial layer faithful to the original module, HFR re-armed on the mainboard's announcement. The files in the root are unchanged.
+
 ## The power station
 
 | | |
