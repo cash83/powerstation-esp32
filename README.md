@@ -4,15 +4,15 @@ Replace the Quectel/Acceleronix Wi‑Fi module inside a **Landecia / Wonderfree 
 
 - no vendor cloud, no account, no app login
 - no BLE provisioning, no TLS‑PSK, no device "bind"
-- and the infamous **~40‑minute freeze is gone at the root** — because there is no TCP‑to‑cloud session on the serial wire to stall.
+- and the infamous **~40‑minute freeze is gone** — the ESP closes the mainboard's periodic "network check" pause within a few seconds at most, where the stock module only got out of it by reconnecting (see [The ~40‑minute freeze, explained](#the-40minute-freeze-explained)).
 
-Verified running continuously well past the 42‑minute mark (1 h 40+), telemetry updating every ~5 s, zero freezes.
+Current version (23 November 2026): 8 of these pauses in a row closed on their own in 0.4–3.1 s, no "data stopped" alarm all night, telemetry every few seconds.
 
 > This is a **hardware mod** (you open the unit and swap a module). It is fully reversible — unplug the ESP, plug the original module back in.
 
 ---
 
-> **Newer beta available** — see [`beta-2026-11-11/`](beta-2026-11-11/) ([English](beta-2026-11-11/README.md) · [italiano](beta-2026-11-11/LEGGIMI.md)): stall watchdog, serial layer faithful to the original module, HFR re-armed on the mainboard's announcement. The files in the root are unchanged.
+> **The files in the root are the current version (2026‑11‑23)** — see [What's new](#whats-new-20261123) · [italiano](LEGGIMI.md). The earlier beta is kept for reference in [`beta-2026-11-11/`](beta-2026-11-11/); the version of 4 November is in the git history.
 
 ## The power station
 
@@ -30,9 +30,22 @@ The datapoint IDs on the serial bus are the **same** as the vendor's LAN/cloud p
 
 ## Why bother — the freeze
 
-On the stock module, the station's telemetry runs over a TCP session to the Acceleronix cloud (or the LAN fallback that still depends on a cloud session key). That session dies on its own after ~40 minutes and the data stalls until you force a reconnect. Chasing it through fake‑cloud brokers, BLE provisioning and TLS‑PSK is a deep rabbit hole.
+On the stock module the station's data stops after ~40 minutes and only comes back when the module reconnects. Chasing it through fake‑cloud brokers, BLE provisioning and TLS‑PSK is a deep rabbit hole.
 
-**The serial wire has none of that.** The mainboard just wants *a module* on its UART that answers the handshake and keeps it in "connected" state. So we become the module. No cloud session exists, so nothing can time out.
+### The ~40‑minute freeze, explained
+
+Capturing the serial wire (16 pauses out of 16) showed that **the freeze starts in the mainboard, not in the cloud**:
+
+1. Every ~606 s the mainboard asks the module for the Wi‑Fi signal (`0x24`). **Every 4th time** (≈ 2426 s, the "40 minutes") it enters a *network check*: it asks `0x2B` ("how is the network?") and `0x35` **every second**, and stops sending reports.
+2. Answering those questions correctly is **not enough**: the ESP answered `0x2B = 04` ("connected to the cloud") for 8 minutes in a row and the pause did not end.
+3. The pause ends **only when the module announces the network status on its own**, `0x03 = 04`:
+   ```
+   ESP  -> 55 AA 00 03 00 01 04 07   (unsolicited: "I am connected to the cloud")
+   MCU  -> 55 AA 03 03 00 00 05      (ack) — reports resume ~110 ms later
+   ```
+4. The stock FC41D sends `0x03` **only when its connection state changes** (seen in its firmware dump). So it stays silent, the pause never ends, and the data comes back only when the module drops and reconnects — that is the freeze.
+
+**The cure** (in `powerstation_module.h`, `case 0x2B`): when a second `0x2B` arrives within 3 s, the ESP immediately announces `0x03 = 04`, and nothing else. If 5 s after the announcement the mainboard is still asking, it falls back to a simulated Wi‑Fi off/on (at most once every 2 minutes). The log shows `PAUSA DEI 40 MINUTI …` and then `PAUSA CHIUSA dopo X ms (bastato l'annuncio 0x03=04)`.
 
 ---
 
@@ -40,11 +53,34 @@ On the stock module, the station's telemetry runs over a TCP session to the Acce
 
 The custom component (`powerstation_module.h`, included via `esphome: includes:`) is a **response‑gated responder + TTLV parser**:
 
-1. **Handshake.** Send the Tuya heartbeat in INIT until the MCU replies `55AA 03 00 00 01 01 04`; answer product‑info `0x01`; **send net‑status `0x03 = 0x04` ("connected to cloud")** — that byte turns on the Wi‑Fi icon and **unlocks the `0x07` telemetry reports**. Also answer the Quectel‑specific `0x2B` / `0x35` exchange, SNTP time `0x1C`, MAC `0x2D`, IP `0x90`.
-2. **Two report families.** A **fast set** (PV / grid / AC / DC) arrives only after an `0x08` "read‑all" query; a **slow set** (battery / cells / temps) is pushed by the MCU on its own every ~2–3 min. **Hammering `0x08` suppresses the slow set**, so instead we turn on **high‑frequency reporting** (`DP 19 = 1`): the MCU then pushes *everything* every ~5 s by itself. It drops back after ~20 s, so the firmware **re‑arms it every 10 s**.
+1. **Handshake.** Send the Tuya heartbeat in INIT until the MCU replies `55AA 03 00 00 01 01 04`; answer product‑info `0x01`; **send net‑status `0x03 = 0x04` ("connected to cloud")** — that byte turns on the Wi‑Fi icon and **unlocks the `0x07` telemetry reports**. Also answer the Quectel‑specific `0x2B` / `0x35` exchange, time `0x1C` / `0x0C` (taken from Home Assistant), MAC `0x2D`, IP `0x90`, Wi‑Fi signal `0x24`, free memory `0x0F`, synchronous report `0x22` (acked with `0x23`).
+2. **Two report families.** A **fast set** (PV / grid / AC / DC) arrives only after an `0x08` "read‑all" query; a **slow set** (battery / cells / temps) is pushed by the MCU on its own every ~2–3 min. **Hammering `0x08` suppresses the slow set**, so instead we turn on **high‑frequency reporting** (`DP 19 = 1`): the MCU then pushes *everything* every few seconds by itself. It switches itself off after ~30 s and announces it with a short report `DP 19 = 0`; the firmware re‑arms it **only when that announcement arrives** (at most once every 5 s).
 3. **Parser.** TTLV: `id(2B) | type(1) | len(2B) | value`; `0x11` = double (8 B, no scale), `0x02/0x04` = int, `0x12` = struct → recurse. Sensor key = top‑level id, or `(group<<8)|sub` inside a struct/array.
 4. **Writes.** Switches / numbers / selects write back with `cmd 0x06`, same `id|type|len|value` encoding.
 5. **Onboard status LED.** The ESP32‑S3 RGB LED is exposed as a normal light (`Spia`) you can color/dim; it flips to **red** automatically if the serial link to the mainboard ever goes mute.
+
+---
+
+## What's new (2026‑11‑23)
+
+Compared to the 4 November version (the 11 November beta already had points 2, 3 and part of 6):
+
+1. **The ~40‑minute freeze is closed** by the unsolicited `0x03 = 04` announcement — see [above](#the-40minute-freeze-explained).
+2. **Serial layer like the original module:** at least 50 ms between frames; product‑info `0x01` and network status `0x03` wait for the mainboard's ack and are retransmitted up to 3 times; network status sent only when it changes; heartbeat every 15 s, full restart of the handshake after 5 missed heartbeats.
+3. **Every command the original module answers is answered** (`0x22`, `0x82`, `0x81`, `0x24`, `0x0C`, `0x1C`, `0x0F`, `0x90`, `0x2B`, `0x35`, `0x2D`); anything else is logged as a warning.
+4. **Never talk over the mainboard:** frames the ESP sends on its own initiative wait for 300 ms of silence on the RX line (at most 3 s). Answers to the mainboard's questions go out immediately. A summary line every 10 minutes says how many frames had to wait.
+5. **Robust receiver:** checksum checked while receiving, resync on the next `55 AA`, up to 1017 data bytes per frame, a half‑received frame is kept for up to 3 s (during a heavy block the mainboard sent frames in slow bursts). UART RX buffer raised to 8192 bytes.
+6. **Data‑stall watchdog:** counts only reports that carry the battery group (DP 3). If they are missing for 25 s (or query interval + 15 s), it waits for a quiet moment on the line, then simulates Wi‑Fi off (`0x02`, 3 s) → router (`0x03`, 3 s) → cloud (`0x04`) + query. After 3 attempts without data: full restart of the handshake.
+7. **New controls in Home Assistant:**
+   - **Chiedi i dati** (switch, default on): off = the ESP never sends the `0x08` query and keeps only the reports the mainboard pushes on its own, like the original module (the pause cure stays active).
+   - **Ricollega Wi‑Fi** (button): the simulated Wi‑Fi off/on, by hand.
+   - **Registro seriale completo** (switch, default off): logs every frame in both directions in hex. ⚠ The log then contains your device key (in the `0x2D` reply): remove it before sharing.
+   - **Dati fermi** (binary sensor): on when no real report has arrived for over a minute.
+8. **`powerstation.yaml`:** time from Home Assistant instead of SNTP; Wi‑Fi `output_power: 15dB`, `power_save_mode: light`; logger at WARN and no USB logging (fewer CPU cycles, cooler chip); "Frequenza invio dati" and "Intervallo aggiornamento" are restored at boot (minimum interval 5 s); `flash_chip: gd` under `esp32 > framework > advanced` matches the board used here — **remove it if your flash chip is different**.
+
+**What was measured:** one unit, 22–23 November 2026. Every 40‑minute pause from the evening of the 22nd to the afternoon of the 23rd closed by the announcement alone (0.41 / 0.6 / 0.65 / 0.96 / 1.3 / 2.4 / 2.8 / 3.1 s), the fallback was never needed, the ESP did not reboot, and the "Dati fermi" alarm stayed off all night while the station went from discharging to solar charging.
+
+**Not solved:** a few times (10 and 17–18 November) the mainboard got into a *deep* block where it served the module port only now and then; only switching the station off and on fixed it. That is a different problem from the 40‑minute pause, and the watchdog's last steps are still untested in the field for it.
 
 ---
 
@@ -64,7 +100,7 @@ Unplug the original FC41D module first; the ESP32 takes its place on the connect
 
 | file | what it is |
 |---|---|
-| `powerstation.yaml` | the ESPHome config: UART, Wi‑Fi/API/OTA, SNTP, ~60 template sensors, switches/numbers/selects, the status‑LED light, and the two `interval:` blocks (12 ms drives the component, 1 s drives the LED) |
+| `powerstation.yaml` | the ESPHome config: UART, Wi‑Fi/API/OTA, time from Home Assistant, ~60 template sensors, switches/numbers/selects/buttons, the status‑LED light, and the `interval:` blocks that drive the component and the LED |
 | `powerstation_module.h` | the C++ component: responder state machine, TTLV parser, sensor registration, command writes |
 | `secrets.yaml.example` | template for `secrets.yaml` (Wi‑Fi, API key, OTA password) |
 
@@ -95,7 +131,7 @@ uint8_t mac_[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
    ```bash
    esphome run powerstation.yaml
    ```
-4. In Home Assistant the device is adopted via the **ESPHome** integration (API encryption key from `secrets.yaml`). ~60 entities appear: battery SOC/V/A/W/temp, 13 cell voltages, AC / PV / grid, every DC/USB/Type‑C rail, board temperatures, status & fault (localized), uptime, plus switches (AC/DC out, grid feed, charge limit, beep, LED), numbers (output power, update interval) and selects (mode, reserve, reporting mode, screen timeout).
+4. In Home Assistant the device is adopted via the **ESPHome** integration (API encryption key from `secrets.yaml`). ~60 entities appear: battery SOC/V/A/W/temp, 13 cell voltages, AC / PV / grid, every DC/USB/Type‑C rail, board temperatures, status & fault (localized), uptime, plus switches (AC/DC out, grid feed, charge limit, beep, LED, Chiedi i dati, Registro seriale completo), numbers (output power, update interval), selects (mode, reserve, reporting mode, screen timeout), buttons (Riavvia ESP, Ricollega Wi‑Fi) and the "Dati fermi" alarm.
 
 ---
 

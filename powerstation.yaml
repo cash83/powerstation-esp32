@@ -17,11 +17,28 @@ esp32:
   board: esp32-s3-devkitc-1
   framework:
     type: esp-idf
+    advanced:
+      flash_chip: gd
     sdkconfig_options:
       CONFIG_ESP_BROWNOUT_DET: "n"
 
 logger:
   level: INFO
+  # niente registro sulla porta USB dell'ESP (nessuno la legge): ogni riga costava tempo di processore
+  baud_rate: 0
+  # registro leggero come il 10/11: solo avvisi. Le righe di ogni rapporto [ps] non si scrivono piu'
+  # (centinaia al minuto: processore e radio sempre al lavoro, chip a 30-36 gradi invece di 21);
+  # restano gli avvisi del modulo (WATCHDOG, ricollegamenti, ripartenze). [raw] serve solo quando si
+  # accende l'interruttore "Registro seriale completo".
+  logs:
+    ps: WARN
+    raw: INFO
+    sensor: WARN
+    text_sensor: WARN
+    select: WARN
+    switch: WARN
+    number: WARN
+    light: WARN
 
 # salva le preferenze (intensita' spia, ecc.) in flash entro 10s invece dei 60s di default,
 # cosi' non si perdono se spegni la powerstation poco dopo aver cambiato il valore
@@ -31,7 +48,11 @@ preferences:
 wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
-  output_power: 8.5dB
+  output_power: 15dB          # 17/11: alzata da 12 su richiesta (segnale -76 dBm)
+  # risparmio energetico della radio (12/11 05:25, scelta dell'utente): il 10/11 era stato tolto perche'
+  # sotto carica la coda verso HA si riempiva, ma ora si pubblicano solo i valori che cambiano e il
+  # registro e' leggero. Se tornano le cadute da HA in carica: power_save_mode: none
+  power_save_mode: light
   ap:
     ssid: "${name} fallback"
     password: !secret wifi_password
@@ -43,9 +64,11 @@ ota:
   - platform: esphome
     password: !secret ota_password
 
+# l'ora per la MCU (che la chiede col comando 0x1C): quella di Home Assistant, che c'e' sempre,
+# invece dei server NTP su internet
 time:
-  - platform: sntp
-    id: sntp_time
+  - platform: homeassistant
+    id: ora_ha
     timezone: Europe/Rome
 
 uart:
@@ -53,7 +76,10 @@ uart:
   tx_pin: GPIO17
   rx_pin: GPIO16
   baud_rate: 115200
-  rx_buffer_size: 2048
+  # 8192 = ~0,7 s di margine a 115200 baud. Con 2048 (~0,18 s) bastava un ritardo del ciclo principale
+  # (Wi-Fi debole: -76 dBm il 17/11) per perdere byte: messaggi spezzati, batteria/AC/DC mai aggiornati,
+  # "Dati fermi" ogni 2 minuti
+  rx_buffer_size: 8192
 
 sensor:
   # --- segnale WiFi VERO dell'ESP ---
@@ -224,6 +250,13 @@ button:
   - platform: restart
     name: "Riavvia ESP"
     entity_category: config
+  # finto WiFi spento e riacceso verso il mainboard (quello che lo sblocca quando si inceppa)
+  - platform: template
+    name: "Ricollega Wi-Fi"
+    icon: mdi:wifi-refresh
+    entity_category: config
+    on_press:
+      - lambda: 'if (g_ps) g_ps->ricollega("pulsante in HA");'
 
 number:
   - platform: template
@@ -239,7 +272,7 @@ number:
   - platform: template
     name: "Intervallo aggiornamento"
     id: ps_q_interval
-    min_value: 2
+    min_value: 5
     max_value: 60
     step: 1
     initial_value: 5
@@ -251,6 +284,26 @@ number:
       - lambda: 'if (g_ps) g_ps->set_q_ms((uint32_t)(x * 1000));'
 
 switch:
+  # registro seriale completo: ogni byte che passa fra ESP e stazione, in esadecimale (diagnostica)
+  - platform: template
+    name: "Registro seriale completo"
+    id: ps_raw_log
+    icon: mdi:file-document-outline
+    entity_category: diagnostic
+    optimistic: true
+    restore_mode: ALWAYS_OFF
+    turn_on_action:  { lambda: 'if (g_ps) g_ps->set_raw_log(true);' }
+    turn_off_action: { lambda: 'if (g_ps) g_ps->set_raw_log(false);' }
+  # "Chiedi i dati" (18/11): acceso = l'ESP chiede i dati (query 0x08) ogni "Intervallo aggiornamento";
+  # spento = non chiede mai, tiene solo i rapporti che il mainboard manda da solo (come il modulo vero)
+  - platform: template
+    name: "Chiedi i dati"
+    id: ps_chiedi
+    icon: mdi:database-arrow-down-outline
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+    turn_on_action:  { lambda: 'if (g_ps) g_ps->set_chiedi(true);' }
+    turn_off_action: { lambda: 'if (g_ps) g_ps->set_chiedi(false);' }
   - platform: template
     name: "Uscita AC"
     id: ps_ac_switch
@@ -311,6 +364,7 @@ select:
     optimistic: true
     options: ["Infrequente", "LAN HF", "WiFi HF", "LAN+WiFi HF"]
     initial_option: "LAN HF"
+    restore_value: true          # la scelta resta anche dopo un riavvio dell'ESP
     set_action:
       - lambda: |-
           if (g_ps) { const auto &o = id(ps_hf).traits.get_options(); for (size_t i=0;i<o.size();i++) if (o[i]==x) { g_ps->set_hfr((uint8_t)i); g_ps->write_val(0x0013,(int)i); break; } }
@@ -375,7 +429,7 @@ interval:
     then:
       - lambda: |-
           if (g_ps == nullptr) {
-            g_ps = new PowerstationModule(id(bus), id(sntp_time));
+            g_ps = new PowerstationModule(id(bus), id(ora_ha));
             g_ps->setup();
             // sensori batteria
             g_ps->reg(0x0301, id(ps_soc));
@@ -444,6 +498,11 @@ interval:
             g_ps->reg_sw(0x0020, id(ps_led));            // LED come switch (on se != 0)
             g_ps->set_screen_sel(id(ps_screen));         // spegnimento schermo (valori 3/10/0)
             g_ps->set_auton_txt(id(ps_auton_txt));       // autonomia in giorni/ore/minuti
-            // HFR: nessuna lettura dal report (sfarfallava); il firmware mantiene la scelta utente
+            // HFR: nessuna lettura dal report (sfarfallava); il firmware mantiene la scelta utente,
+            // quella salvata nella tendina (prima ripartiva sempre da LAN HF)
+            { auto i = id(ps_hf).active_index(); if (i.has_value()) g_ps->set_hfr((uint8_t) *i); }
+            // applica subito l'intervallo query salvato nello slider (prima valeva solo dopo averlo toccato)
+            if (!std::isnan(id(ps_q_interval).state)) g_ps->set_q_ms((uint32_t)(id(ps_q_interval).state * 1000));
+            g_ps->set_chiedi(id(ps_chiedi).state);       // "Chiedi i dati" salvato
           }
           g_ps->loop();
