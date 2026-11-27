@@ -37,6 +37,12 @@ Nel registro: `PAUSA DEI 40 MINUTI …` e poi `PAUSA CHIUSA dopo X ms (bastato l
 7. `powerstation.yaml`: ora da Home Assistant invece di SNTP, Wi-Fi a 15 dB con `power_save_mode: light`, registro solo avvisi,
    impostazioni ricordate dopo il riavvio. `flash_chip: gd` è quello della scheda usata qui: **toglilo se la tua ha un altro chip**.
 
+8. **Sensori di energia (27 novembre):** ogni 10 minuti la scheda manda da sola due numeri, **DP 16** "Power Generation"
+   (energia dei pannelli) e **DP 17** "Load Power Consumption" (energia in uscita), in kWh: è l'energia di quei 10 minuti.
+   L'ESP li somma in due sensori, **Energia pannelli** ed **Energia uscita** (kWh, tipo energia, crescenti), salvati in
+   memoria: reggono ai riavvii dell'ESP e si possono usare nella plancia Energia di Home Assistant. Partono da 0 e crescono
+   dal primo invio dopo l'aggiornamento.
+
 ## Cosa è stato misurato
 
 Una sola stazione, 22–23 novembre 2026: tutte le pause dei 40 minuti, dalla sera del 22 al pomeriggio del 23, chiuse dal solo annuncio

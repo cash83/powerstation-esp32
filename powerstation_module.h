@@ -34,6 +34,14 @@ class PowerstationModule : public Component, public uart::UARTDevice {
   void set_q_ms(uint32_t ms) { if (ms >= 1000 && ms <= 120000) q_ms_ = ms; }  // intervallo query (slider)
   void set_screen_sel(select::Select *s) { screen_sel_ = s; }
   void set_auton_txt(text_sensor::TextSensor *s) { auton_txt_ = s; }
+  // ENERGIA (27/11): DP 16 "Power Generation" (pannelli) e DP 17 "Load Power Consumption" (uscita), in kWh.
+  // Il mainboard li manda da solo ogni 10 minuti con l'energia di quei 10 minuti (0,00-0,06): qui si sommano
+  // in due totali che lo yaml tiene in flash (globali con restore_value), cosi' reggono ai riavvii dell'ESP.
+  void set_energia(sensor::Sensor *pv, float *tot_pv, sensor::Sensor *out, float *tot_out) {
+    en_pv_ = pv; en_pv_tot_ = tot_pv; en_out_ = out; en_out_tot_ = tot_out;
+    if (en_pv_ != nullptr && en_pv_tot_ != nullptr) en_pv_->publish_state(*en_pv_tot_);
+    if (en_out_ != nullptr && en_out_tot_ != nullptr) en_out_->publish_state(*en_out_tot_);
+  }
   // "Chiedi i dati" (18/11, scelta di Gabriele): spento = l'ESP la lascia IN PACE: niente query 0x08, niente
   // cane da guardia / finto WiFi del watchdog (resta la cura della pausa 0x2B, che senza non finisce);
   // risponde alle sue domande (+ heartbeat) e tiene viva la frequenza alta (DP19, scritta solo quando
@@ -190,6 +198,8 @@ class PowerstationModule : public Component, public uart::UARTDevice {
   text_sensor::TextSensor *fault_txt_ = nullptr;
   text_sensor::TextSensor *auton_txt_ = nullptr;
   select::Select *screen_sel_ = nullptr;
+  sensor::Sensor *en_pv_ = nullptr, *en_out_ = nullptr;   // energia pannelli / uscita (totali)
+  float *en_pv_tot_ = nullptr, *en_out_tot_ = nullptr;
   uint8_t hfr_mode_ = 1;        // modo HFR mantenuto (scelta utente): 0 Infreq,1 LAN,2 WiFi,3 LAN+WiFi
   uint32_t q_ms_ = 5000;        // intervallo query 0x08 (slider utente)
   uint32_t online_since_ms_ = 0;// da quando siamo in ONLINE (0 = non ancora)
@@ -434,6 +444,13 @@ class PowerstationModule : public Component, public uart::UARTDevice {
     else return;
     // HFR (DP 19): il mainboard dice a che valore e' adesso. Diverso dalla scelta: loop() lo rimette.
     if (key == 0x0013) { hfr_diverso_ = ((int) val != (int) hfr_mode_); return; }
+    // energia dei 10 minuti (DP 16 pannelli, DP 17 uscita): si aggiunge al totale
+    if ((key == 0x0010 || key == 0x0011) && ty == 0x11) {
+      sensor::Sensor *s = key == 0x0010 ? en_pv_ : en_out_;
+      float *t = key == 0x0010 ? en_pv_tot_ : en_out_tot_;
+      if (s != nullptr && t != nullptr && val >= 0.0f && val < 10.0f) { *t += val; s->publish_state(*t); }
+      pub_++; return;
+    }
     // stato e guasto -> testo leggibile
     if (key == 0x000C && status_txt_ != nullptr) {
       static const char *S[] = {"Standby", "In carica", "In scarica", "Carica+Scarica", "Bypass"};

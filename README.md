@@ -78,6 +78,10 @@ Compared to the 4 November version (the 11 November beta already had points 2, 3
    - **Dati fermi** (binary sensor): on when no real report has arrived for over a minute.
 8. **`powerstation.yaml`:** time from Home Assistant instead of SNTP; Wi‑Fi `output_power: 15dB`, `power_save_mode: light`; logger at WARN and no USB logging (fewer CPU cycles, cooler chip); "Frequenza invio dati" and "Intervallo aggiornamento" are restored at boot (minimum interval 5 s); `flash_chip: gd` under `esp32 > framework > advanced` matches the board used here — **remove it if your flash chip is different**.
 
+9. **Energy sensors (27 November):** the mainboard pushes, on its own, a short report **every 10 minutes** with two top‑level datapoints (doubles, kWh):
+   `00 10 11 00 08 <double>` **DP 16** `solar_panel_power_generation` and `00 11 11 00 08 <double>` **DP 17** `load_power_consumption` (names from the product TSL `p11tpn`).
+   The values are the energy **of those 10 minutes** (0.00–0.06 kWh here), not a running total. The firmware adds them up into two sensors, **Energia pannelli** and **Energia uscita** (kWh, `device_class: energy`, `state_class: total_increasing`), kept in flash through `globals` with `restore_value`, so they survive ESP reboots and can be used in the Home Assistant Energy dashboard. They start from 0 and grow only from the first report after flashing.
+
 **What was measured:** one unit, 22–23 November 2026. Every 40‑minute pause from the evening of the 22nd to the afternoon of the 23rd closed by the announcement alone (0.41 / 0.6 / 0.65 / 0.96 / 1.3 / 2.4 / 2.8 / 3.1 s), the fallback was never needed, the ESP did not reboot, and the "Dati fermi" alarm stayed off all night while the station went from discharging to solar charging.
 
 **Not solved:** a few times (10 and 17–18 November) the mainboard got into a *deep* block where it served the module port only now and then; only switching the station off and on fixed it. That is a different problem from the 40‑minute pause, and the watchdog's last steps are still untested in the field for it.
@@ -131,7 +135,7 @@ uint8_t mac_[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
    ```bash
    esphome run powerstation.yaml
    ```
-4. In Home Assistant the device is adopted via the **ESPHome** integration (API encryption key from `secrets.yaml`). ~60 entities appear: battery SOC/V/A/W/temp, 13 cell voltages, AC / PV / grid, every DC/USB/Type‑C rail, board temperatures, status & fault (localized), uptime, plus switches (AC/DC out, grid feed, charge limit, beep, LED, Chiedi i dati, Registro seriale completo), numbers (output power, update interval), selects (mode, reserve, reporting mode, screen timeout), buttons (Riavvia ESP, Ricollega Wi‑Fi) and the "Dati fermi" alarm.
+4. In Home Assistant the device is adopted via the **ESPHome** integration (API encryption key from `secrets.yaml`). ~60 entities appear: battery SOC/V/A/W/temp, 13 cell voltages, AC / PV / grid, every DC/USB/Type‑C rail, board temperatures, status & fault (localized), uptime, plus switches (AC/DC out, grid feed, charge limit, beep, LED, Chiedi i dati, Registro seriale completo), numbers (output power, update interval), selects (mode, reserve, reporting mode, screen timeout), buttons (Riavvia ESP, Ricollega Wi‑Fi), the "Dati fermi" alarm and two energy totals (Energia pannelli, Energia uscita).
 
 ---
 

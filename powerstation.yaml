@@ -81,6 +81,17 @@ uart:
   # "Dati fermi" ogni 2 minuti
   rx_buffer_size: 8192
 
+# totali di energia (DP 16 pannelli, DP 17 uscita), salvati in flash: reggono ai riavvii dell'ESP
+globals:
+  - id: en_pv_tot
+    type: float
+    restore_value: true
+    initial_value: '0.0'
+  - id: en_out_tot
+    type: float
+    restore_value: true
+    initial_value: '0.0'
+
 sensor:
   # --- segnale WiFi VERO dell'ESP ---
   - platform: wifi_signal
@@ -196,6 +207,9 @@ sensor:
   - { platform: template, name: "Cella 12", id: ps_cell_12, unit_of_measurement: "V", device_class: voltage, accuracy_decimals: 3, entity_category: diagnostic, update_interval: never }
   - { platform: template, name: "Cella 13", id: ps_cell_13, unit_of_measurement: "V", device_class: voltage, accuracy_decimals: 3, entity_category: diagnostic, update_interval: never }
   - { platform: template, name: "Cicli batteria", id: ps_cycles, accuracy_decimals: 0, entity_category: diagnostic, update_interval: never }
+  # energia (27/11): somma degli invii da 10 minuti del mainboard (DP 16 / DP 17)
+  - { platform: template, name: "Energia pannelli", id: ps_en_pv, unit_of_measurement: "kWh", device_class: energy, state_class: total_increasing, accuracy_decimals: 2, icon: "mdi:solar-power", update_interval: never }
+  - { platform: template, name: "Energia uscita", id: ps_en_out, unit_of_measurement: "kWh", device_class: energy, state_class: total_increasing, accuracy_decimals: 2, icon: "mdi:transmission-tower-export", update_interval: never }
   - { platform: template, name: "Corrente max carica", id: ps_maxchg, unit_of_measurement: "A", device_class: current, accuracy_decimals: 1, entity_category: diagnostic, update_interval: never }
   - { platform: template, name: "Stato MOS BMS", id: ps_mos, accuracy_decimals: 0, entity_category: diagnostic, update_interval: never }
 
@@ -498,6 +512,7 @@ interval:
             g_ps->reg_sw(0x0020, id(ps_led));            // LED come switch (on se != 0)
             g_ps->set_screen_sel(id(ps_screen));         // spegnimento schermo (valori 3/10/0)
             g_ps->set_auton_txt(id(ps_auton_txt));       // autonomia in giorni/ore/minuti
+            g_ps->set_energia(id(ps_en_pv), &id(en_pv_tot), id(ps_en_out), &id(en_out_tot));   // energia DP 16/17
             // HFR: nessuna lettura dal report (sfarfallava); il firmware mantiene la scelta utente,
             // quella salvata nella tendina (prima ripartiva sempre da LAN HF)
             { auto i = id(ps_hf).active_index(); if (i.has_value()) g_ps->set_hfr((uint8_t) *i); }
